@@ -1,0 +1,23 @@
+{
+  "name": "yuanbao2api",
+  "version": "1.0.0",
+  "description": "将元宝网页版转换为 OpenAI 兼容的 API",
+  "main": "yuanbao2api.js",
+  "scripts": {
+    "start": "node yuanbao2api.js",
+    "dev": "nodemon yuanbao2api.js",
+    "test": "node test.js"
+  },
+  "keywords": ["yuanbao", "openai", "api", "proxy"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.0.3",
+    "express": "^4.18.2",
+    "node-fetch": "^2.7.0",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}

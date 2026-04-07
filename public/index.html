@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>元宝2API 管理面板</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: #000;
+            color: #fff;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        header {
+            border-bottom: 1px solid #333;
+            padding-bottom: 20px;
+            margin-bottom: 40px;
+        }
+
+        h1 {
+            font-size: 32px;
+            font-weight: 300;
+            letter-spacing: -1px;
+        }
+
+        .subtitle {
+            color: #888;
+            font-size: 14px;
+            margin-top: 8px;
+        }
+
+        .section {
+            background: #111;
+            border: 1px solid #222;
+            border-radius: 8px;
+            padding: 24px;
+            margin-bottom: 24px;
+        }
+
+        .section-title {
+            font-size: 18px;
+            font-weight: 500;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #222;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 8px;
+        }
+
+        input[type="text"],
+        input[type="number"],
+        select {
+            width: 100%;
+            padding: 12px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 4px;
+            color: #fff;
+            font-size: 14px;
+            transition: border-color 0.2s;
+        }
+
+        input:focus,
+        select:focus {
+            outline: none;
+            border-color: #666;
+        }
+
+        .toggle-group {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+        }
+
+        .toggle-item {
+            flex: 1;
+            min-width: 200px;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 16px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: border-color 0.2s;
+        }
+
+        .toggle:hover {
+            border-color: #555;
+        }
+
+        .toggle.active {
+            border-color: #fff;
+            background: #1a1a1a;
+        }
+
+        .toggle-label {
+            font-size: 14px;
+        }
+
+        .toggle-switch {
+            width: 44px;
+            height: 24px;
+            background: #333;
+            border-radius: 12px;
+            position: relative;
+            transition: background 0.2s;
+        }
+
+        .toggle.active .toggle-switch {
+            background: #fff;
+        }
+
+        .toggle-switch::after {
+            content: '';
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            background: #000;
+            border-radius: 50%;
+            top: 2px;
+            left: 2px;
+            transition: left 0.2s;
+        }
+
+        .toggle.active .toggle-switch::after {
+            left: 22px;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            background: #fff;
+            color: #000;
+            border: none;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        .btn:hover {
+            opacity: 0.8;
+        }
+
+        .btn:disabled {
+            opacity: 0.3;
+            cursor: not-allowed;
+        }
+
+        .btn-secondary {
+            background: #222;
+            color: #fff;
+            border: 1px solid #333;
+        }
+
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #666;
+        }
+
+        .status.online .status-dot {
+            background: #0f0;
+        }
+
+        .test-section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .test-result {
+            padding: 16px;
+            background: #000;
+            border: 1px solid #333;
+            border-radius: 4px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .test-result::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .test-result::-webkit-scrollbar-track {
+            background: #111;
+        }
+
+        .test-result::-webkit-scrollbar-thumb {
+            background: #333;
+            border-radius: 4px;
+        }
+
+        @media (max-width: 768px) {
+            .test-section {
+                grid-template-columns: 1fr;
+            }
+
+            .toggle-group {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>元宝2API 管理面板</h1>
+            <div class="subtitle">配置和管理你的元宝 API 服务</div>
+        </header>
+
+        <!-- 服务状态 -->
+        <div class="section">
+            <div class="section-title">服务状态</div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status" id="status">
+                    <span class="status-dot"></span>
+                    <span>检查中...</span>
+                </div>
+                <button class="btn btn-secondary" onclick="checkStatus()">刷新状态</button>
+            </div>
+        </div>
+
+        <!-- 功能配置 -->
+        <div class="section">
+            <div class="section-title">功能配置</div>
+            <div class="toggle-group">
+                <div class="toggle-item">
+                    <div class="toggle" id="deepThinkingToggle" onclick="toggleFeature('deepThinking')">
+                        <span class="toggle-label">深度思考</span>
+                        <div class="toggle-switch"></div>
+                    </div>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle" id="internetSearchToggle" onclick="toggleFeature('internetSearch')">
+                        <span class="toggle-label">联网搜索</span>
+                        <div class="toggle-switch"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 模型选择 -->
+        <div class="section">
+            <div class="section-title">模型配置</div>
+            <div class="form-group">
+                <label>默认模型</label>
+                <select id="modelSelect">
+                    <option value="deep_seek_v3">DeepSeek V3.2 - 深度思考</option>
+                    <option value="hunyuan">Hunyuan T1 - 全能处理</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- API 测试 -->
+        <div class="section">
+            <div class="section-title">API 测试</div>
+            <div class="form-group">
+                <label>测试消息</label>
+                <input type="text" id="testMessage" placeholder="输入测试消息..." value="你好">
+            </div>
+            <div style="margin-bottom: 16px;">
+                <button class="btn" onclick="testAPI()">发送测试</button>
+            </div>
+            <div class="test-section">
+                <div>
+                    <label>请求</label>
+                    <div class="test-result" id="requestResult">等待测试...</div>
+                </div>
+                <div>
+                    <label>响应</label>
+                    <div class="test-result" id="responseResult">等待测试...</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- API 信息 -->
+        <div class="section">
+            <div class="section-title">API 信息</div>
+            <div class="form-group">
+                <label>API 端点</label>
+                <input type="text" readonly value="http://localhost:3000/v1/chat/completions">
+            </div>
+            <div class="form-group">
+                <label>模型列表端点</label>
+                <input type="text" readonly value="http://localhost:3000/v1/models">
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let config = {
+            deepThinking: false,
+            internetSearch: false,
+            defaultModel: 'deep_seek_v3'
+        };
+
+        // 从服务端加载配置
+        async function loadConfig() {
+            try {
+                const res = await fetch('/api/config');
+                const data = await res.json();
+                config = data;
+                applyConfigToUI();
+            } catch (e) {}
+        }
+
+        // 把配置同步到 UI
+        function applyConfigToUI() {
+            const dt = document.getElementById('deepThinkingToggle');
+            const is = document.getElementById('internetSearchToggle');
+            dt.classList.toggle('active', config.deepThinking);
+            is.classList.toggle('active', config.internetSearch);
+            document.getElementById('modelSelect').value = config.defaultModel;
+        }
+
+        // 保存配置到服务端
+        async function saveConfig() {
+            try {
+                await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(config)
+                });
+            } catch (e) {}
+        }
+
+        // 检查服务状态
+        async function checkStatus() {
+            const statusEl = document.getElementById('status');
+            try {
+                const response = await fetch('/health');
+                if (response.ok) {
+                    statusEl.className = 'status online';
+                    statusEl.innerHTML = '<span class="status-dot"></span><span>服务运行中</span>';
+                } else {
+                    statusEl.className = 'status';
+                    statusEl.innerHTML = '<span class="status-dot"></span><span>服务异常</span>';
+                }
+            } catch (error) {
+                statusEl.className = 'status';
+                statusEl.innerHTML = '<span class="status-dot"></span><span>无法连接</span>';
+            }
+        }
+
+        // 切换功能 — 同步到服务端
+        function toggleFeature(feature) {
+            config[feature] = !config[feature];
+            const toggle = document.getElementById(feature + 'Toggle');
+            toggle.classList.toggle('active', config[feature]);
+            saveConfig();
+        }
+
+        // 模型切换 — 同步到服务端
+        document.getElementById('modelSelect').addEventListener('change', function() {
+            config.defaultModel = this.value;
+            saveConfig();
+        });
+
+        // 测试 API
+        async function testAPI() {
+            const message = document.getElementById('testMessage').value;
+
+            const requestBody = {
+                model: config.defaultModel,
+                messages: [{ role: 'user', content: message }],
+                stream: false
+            };
+
+            document.getElementById('requestResult').textContent = JSON.stringify(requestBody, null, 2);
+            document.getElementById('responseResult').textContent = '请求中...';
+
+            try {
+                const response = await fetch('/v1/chat/completions', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(requestBody)
+                });
+
+                const data = await response.json();
+                document.getElementById('responseResult').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                document.getElementById('responseResult').textContent = '错误: ' + error.message;
+            }
+        }
+
+        // 初始化
+        loadConfig();
+        checkStatus();
+        setInterval(checkStatus, 30000);
+    </script>
+</body>
+</html>
