@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   packages: write
+
+concurrency:
+  group: ghcr-release
+  cancel-in-progress: false
 
 jobs:
   docker:
@@ -20,49 +24,118 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Validate release tag
-        if: github.event_name == 'push'
+      - name: Resolve release tag
+        id: release
         shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          current_tag="${GITHUB_REF_NAME}"
+          set -euo pipefail
+          git fetch --force --tags origin
 
-          if [[ ! "$current_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Tag must match v<major>.<minor>.<patch>, for example v1.0.0"
-            exit 1
-          fi
+          python <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
 
-          mapfile -t previous_tags < <(
-            git tag --list 'v*.*.*' \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
-              | grep -Fxv "$current_tag" \
-              | sort -V
-          )
+          event_name = os.environ["EVENT_NAME"]
+          ref_name = os.environ.get("REF_NAME", "").strip()
+          default_branch = os.environ.get("DEFAULT_BRANCH", "main").strip()
+          pattern = re.compile(r"^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
 
-          if [[ ${#previous_tags[@]} -eq 0 ]]; then
-            if [[ "$current_tag" != "v1.0.0" ]]; then
-              echo "The first release tag must be v1.0.0"
-              exit 1
-            fi
-            exit 0
-          fi
+          raw_tags = subprocess.check_output(
+              ["git", "tag", "--list", "v*.*.*"],
+              text=True,
+          ).splitlines()
 
-          previous_tag="${previous_tags[-1]}"
-          current_version="${current_tag#v}"
-          previous_version="${previous_tag#v}"
+          versions = []
+          for raw_tag in raw_tags:
+              tag = raw_tag.strip()
+              match = pattern.fullmatch(tag)
+              if match:
+                  versions.append((tuple(map(int, match.groups())), tag))
 
-          IFS='.' read -r current_major current_minor current_patch <<< "$current_version"
-          IFS='.' read -r previous_major previous_minor previous_patch <<< "$previous_version"
+          versions.sort(key=lambda item: item[0])
 
-          if [[ "$current_major" -ne "$previous_major" || "$current_minor" -ne "$previous_minor" ]]; then
-            echo "Only patch releases are allowed. Previous tag: $previous_tag, current tag: $current_tag"
-            exit 1
-          fi
+          def fail(message: str) -> None:
+              print(message)
+              sys.exit(1)
 
-          expected_patch=$((previous_patch + 1))
-          if [[ "$current_patch" -ne "$expected_patch" ]]; then
-            echo "Patch version must increase by exactly 1. Expected v${previous_major}.${previous_minor}.${expected_patch}, got $current_tag"
-            exit 1
-          fi
+          def write_output(tag: str) -> None:
+              output_path = os.environ["GITHUB_OUTPUT"]
+              with open(output_path, "a", encoding="utf-8") as fh:
+                  fh.write(f"tag={tag}\n")
+
+          if event_name == "workflow_dispatch":
+              if ref_name != default_branch:
+                  fail(f"Manual release must run from {default_branch}, current ref is {ref_name}.")
+
+              if not versions:
+                  tag = "v1.0.0"
+              else:
+                  (major, minor, patch), _ = versions[-1]
+                  tag = f"v{major}.{minor}.{patch + 1}"
+
+              print(f"Next release tag: {tag}")
+              write_output(tag)
+              sys.exit(0)
+
+          if not pattern.fullmatch(ref_name):
+              fail("Tag must match v<major>.<minor>.<patch>, for example v1.0.0")
+
+          current_match = pattern.fullmatch(ref_name)
+          assert current_match is not None
+          current_version = tuple(map(int, current_match.groups()))
+          previous_versions = [item for item in versions if item[1] != ref_name]
+
+          if not previous_versions:
+              if ref_name != "v1.0.0":
+                  fail("The first release tag must be v1.0.0")
+          else:
+              (prev_major, prev_minor, prev_patch), prev_tag = previous_versions[-1]
+              current_major, current_minor, current_patch = current_version
+
+              if (current_major, current_minor) != (prev_major, prev_minor):
+                  fail(
+                      f"Only patch releases are allowed. Previous tag: {prev_tag}, current tag: {ref_name}"
+                  )
+
+              expected_patch = prev_patch + 1
+              if current_patch != expected_patch:
+                  fail(
+                      f"Patch version must increase by exactly 1. Expected v{prev_major}.{prev_minor}.{expected_patch}, got {ref_name}"
+                  )
+
+          print(f"Validated release tag: {ref_name}")
+          write_output(ref_name)
+          PY
+
+      - name: Create and push release tag
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          export GIT_AUTHOR_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_COMMITTER_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+          git push origin "refs/tags/$RELEASE_TAG"
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ steps.release.outputs.tag }}
+            type=raw,value=latest
+            type=sha,prefix=sha-
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -73,17 +146,6 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract Docker metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=ref,event=branch
-            type=ref,event=tag
-            type=sha
-            type=raw,value=latest,enable={{is_default_branch}}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
