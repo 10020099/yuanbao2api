@@ -100,6 +100,120 @@ const tests = [
       }
       return null;
     }
+  },
+  {
+    name: 'OpenAI 工具调用测试',
+    path: '/v1/chat/completions',
+    method: 'POST',
+    body: {
+      model: 'deep_seek_v3',
+      messages: [
+        { role: 'user', content: '北京今天天气怎么样？' }
+      ],
+      stream: false,
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'get_weather',
+          description: '获取指定城市的天气信息',
+          parameters: {
+            type: 'object',
+            properties: {
+              city: { type: 'string', description: '城市名称' }
+            },
+            required: ['city']
+          }
+        }
+      }]
+    },
+    validate: (result) => {
+      if (!result.data.choices || !result.data.choices[0]) {
+        return '响应格式错误';
+      }
+      const choice = result.data.choices[0];
+      if (choice.finish_reason === 'tool_calls' && choice.message.tool_calls) {
+        const tc = choice.message.tool_calls[0];
+        console.log(`  ✓ 工具调用触发: ${tc.function.name}(${tc.function.arguments})`);
+      } else {
+        console.log(`  ℹ 模型未触发工具调用，finish_reason: ${choice.finish_reason}`);
+        console.log(`  响应: ${choice.message.content?.substring(0, 80)}`);
+      }
+      return null;
+    }
+  },
+  {
+    name: 'Anthropic Messages API 测试',
+    path: '/v1/messages',
+    method: 'POST',
+    headers: {
+      'x-api-key': 'dummy',
+      'anthropic-version': '2023-06-01'
+    },
+    body: {
+      model: 'deep_seek_v3',
+      max_tokens: 1024,
+      messages: [
+        { role: 'user', content: '你好，请用一句话介绍你自己' }
+      ]
+    },
+    validate: (result) => {
+      if (result.data.type !== 'message') {
+        return `Anthropic 响应类型错误: ${result.data.type}`;
+      }
+      if (!result.data.content || !Array.isArray(result.data.content)) {
+        return 'Anthropic 响应 content 格式错误';
+      }
+      const textBlock = result.data.content.find(b => b.type === 'text');
+      if (!textBlock) {
+        return '未找到 text content block';
+      }
+      console.log(`  响应: ${textBlock.text.substring(0, 50)}${textBlock.text.length > 50 ? '...' : ''}`);
+      console.log(`  stop_reason: ${result.data.stop_reason}`);
+      return null;
+    }
+  },
+  {
+    name: 'Anthropic 工具调用测试',
+    path: '/v1/messages',
+    method: 'POST',
+    headers: {
+      'x-api-key': 'dummy',
+      'anthropic-version': '2023-06-01'
+    },
+    body: {
+      model: 'deep_seek_v3',
+      max_tokens: 1024,
+      messages: [
+        { role: 'user', content: '北京今天天气怎么样？' }
+      ],
+      tools: [{
+        name: 'get_weather',
+        description: '获取指定城市的天气信息',
+        input_schema: {
+          type: 'object',
+          properties: {
+            city: { type: 'string', description: '城市名称' }
+          },
+          required: ['city']
+        }
+      }]
+    },
+    validate: (result) => {
+      if (result.data.type !== 'message') {
+        return `Anthropic 响应类型错误: ${result.data.type}`;
+      }
+      const toolBlock = result.data.content?.find(b => b.type === 'tool_use');
+      if (toolBlock) {
+        console.log(`  ✓ 工具调用触发: ${toolBlock.name}(${JSON.stringify(toolBlock.input)})`);
+      } else {
+        console.log(`  ℹ 模型未触发工具调用, stop_reason: ${result.data.stop_reason}`);
+        const textBlock = result.data.content?.find(b => b.type === 'text');
+        if (textBlock) {
+          console.log(`  响应: ${textBlock.text?.substring(0, 80)}`);
+        }
+      }
+      return null;
+    }
   }
 ];
 
@@ -113,7 +227,8 @@ function request(options, body) {
       path: url.pathname,
       method: options.method,
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        ...(options.headers || {})
       }
     }, (res) => {
       let data = '';
