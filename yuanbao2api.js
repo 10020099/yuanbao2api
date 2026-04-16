@@ -108,12 +108,50 @@ function buildToolSystemPrompt(tools) {
   ].join('\n');
 }
 
-// 解析模型输出中的工具调用（兼容 Unicode 和 ASCII 两种标记格式，以及自然语言格式）
+function extractBalancedJson(text, startIndex) {
+  if (startIndex >= text.length || text[startIndex] !== '{') return null;
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  for (let i = startIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (escape) { escape = false; continue; }
+    if (ch === '\\' && inString) { escape = true; continue; }
+    if (ch === '"' && !escape) { inString = !inString; continue; }
+    if (inString) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return text.substring(startIndex, i + 1); }
+  }
+  return null;
+}
+
+function findNaturalToolCalls(text) {
+  const calls = [];
+  const namePattern = /"?name"?\s*:\s*"([^"]+)"\s*,\s*"?arguments"?\s*:\s*/g;
+  let match;
+  while ((match = namePattern.exec(text)) !== null) {
+    const name = match[1];
+    const argsStart = match.index + match[0].length;
+    const argsJson = extractBalancedJson(text, argsStart);
+    if (argsJson) {
+      try {
+        const args = JSON.parse(argsJson);
+        calls.push({
+          name,
+          arguments: typeof args === 'string' ? args : JSON.stringify(args),
+          fullMatchStart: match.index,
+          fullMatchEnd: argsStart + argsJson.length
+        });
+      } catch {}
+    }
+  }
+  return calls;
+}
+
 function parseToolCalls(text) {
   const calls = [];
   let searchFrom = 0;
 
-  // 方法1：尝试匹配标记格式
   while (searchFrom < text.length) {
     const startMatch = detectToolCallStart(text, searchFrom);
     if (startMatch.index === -1 || !startMatch.tag) break;
@@ -134,33 +172,17 @@ function parseToolCalls(text) {
     searchFrom = endMatch.index + endMatch.tag.length;
   }
 
-  // 方法2：如果没有找到标记格式，尝试匹配自然语言格式
-  // 匹配: name": "函数名", "arguments": {...}
-  // 或: "name": "函数名", "arguments": {...}
   if (calls.length === 0) {
-    const naturalPattern = /(?:^|(?<=[^{]))\s*"?name"?\s*:\s*"([^"]+)"\s*,\s*"?arguments"?\s*:\s*(\{[^}]*\}|\[\]|\{\})/g;
-    let match;
-    while ((match = naturalPattern.exec(text)) !== null) {
-      try {
-        const name = match[1];
-        const argsStr = match[2];
-        const args = JSON.parse(argsStr);
-        calls.push({
-          name: name,
-          arguments: typeof args === 'string' ? args : JSON.stringify(args)
-        });
-      } catch {
-        // 解析失败，跳过
-      }
+    const naturalCalls = findNaturalToolCalls(text);
+    for (const nc of naturalCalls) {
+      calls.push({ name: nc.name, arguments: nc.arguments });
     }
   }
 
   return calls;
 }
 
-// 从文本中移除工具调用标记，返回纯文本内容（兼容两种标记格式和自然语言格式）
 function stripToolCalls(text) {
-  // 先移除标记格式的工具调用
   let result = text;
   while (true) {
     const startMatch = detectToolCallStart(result);
@@ -170,10 +192,11 @@ function stripToolCalls(text) {
     result = result.substring(0, startMatch.index) + result.substring(endMatch.index + endMatch.tag.length);
   }
 
-  // 再移除自然语言格式的工具调用片段
-  // 匹配: name": "函数名", "arguments": {...}
-  // 使用零宽断言避免消耗前面的字符
-  result = result.replace(/(?:^|(?<=[^{]))\s*"?name"?\s*:\s*"[^"]+"\s*,\s*"?arguments"?\s*:\s*(?:\{[^}]*\}|\[\]|\{\})/g, '');
+  const naturalCalls = findNaturalToolCalls(result);
+  for (let i = naturalCalls.length - 1; i >= 0; i--) {
+    const nc = naturalCalls[i];
+    result = result.substring(0, nc.fullMatchStart) + result.substring(nc.fullMatchEnd);
+  }
 
   return result.trim();
 }
@@ -455,13 +478,16 @@ app.post('/v1/chat/completions', async (req, res) => {
       let isFirstThinkChunk = true;
       let isFirstTextChunk = true;
       let buffer = '';
-      let textBuffer = '';  // 缓冲未发送的文本，用于检测工具调用标记
-      let inToolCall = false;  // 是否正在工具调用标记内
+      let textBuffer = '';
+      let inToolCall = false;
+      let inNaturalToolCall = false;
+      let naturalToolCallStartIdx = -1;
       const reader = response.body;
 
+      const NATURAL_TOOL_PATTERN = /"?name"?\s*:\s*"[^"]+"\s*,\s*"?arguments"?\s*:\s*\{/;
+
       function flushTextBuffer() {
-        // 发送缓冲的文本内容（排除工具调用标记部分）
-        if (textBuffer && !inToolCall) {
+        if (textBuffer && !inToolCall && !inNaturalToolCall) {
           const delta = { content: textBuffer };
           if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
           isFirstTextChunk = false;
@@ -474,6 +500,20 @@ app.post('/v1/chat/completions', async (req, res) => {
           })}\n\n`);
         }
         textBuffer = '';
+      }
+
+      function sendTextChunk(text) {
+        if (!text) return;
+        const delta = { content: text };
+        if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
+        isFirstTextChunk = false;
+        res.write(`data: ${JSON.stringify({
+          id: `chatcmpl-${Date.now()}`,
+          object: 'chat.completion.chunk',
+          created: Math.floor(Date.now() / 1000),
+          model: model,
+          choices: [{ index: 0, delta, finish_reason: null }]
+        })}\n\n`);
       }
 
       function processLine(line) {
@@ -503,58 +543,60 @@ app.post('/v1/chat/completions', async (req, res) => {
           textBuffer += data.msg;
 
           if (tools) {
-            // 检测工具调用标记的开始（兼容 Unicode 和 ASCII 格式）
             const startMatch = detectToolCallStart(textBuffer);
             if (startMatch.index !== -1 && !inToolCall) {
-              // 先把标记前的文本发出去
+              if (inNaturalToolCall) { inNaturalToolCall = false; naturalToolCallStartIdx = -1; }
               const beforeTag = textBuffer.substring(0, startMatch.index);
               textBuffer = textBuffer.substring(startMatch.index);
-              if (beforeTag) {
-                const delta = { content: beforeTag };
-                if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
-                isFirstTextChunk = false;
-                res.write(`data: ${JSON.stringify({
-                  id: `chatcmpl-${Date.now()}`,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: model,
-                  choices: [{ index: 0, delta, finish_reason: null }]
-                })}\n\n`);
-              }
+              if (beforeTag) { sendTextChunk(beforeTag); }
               inToolCall = true;
               textBuffer = '';
             }
 
-            // 检测工具调用标记的结束
             if (inToolCall) {
               const endMatch = detectToolCallEnd(fullText);
               if (endMatch.index !== -1) {
                 inToolCall = false;
-                // 标记之后的文本继续缓冲
               }
             }
 
-            // 如果不在工具调用标记内，且有足够缓冲，安全地发送文本
-            if (!inToolCall) {
-              // 保留可能的不完整标记前缀
+            if (!inToolCall && !inNaturalToolCall) {
+              const natMatch = NATURAL_TOOL_PATTERN.exec(textBuffer);
+              if (natMatch) {
+                naturalToolCallStartIdx = natMatch.index;
+                const beforeNat = textBuffer.substring(0, naturalToolCallStartIdx);
+                textBuffer = textBuffer.substring(naturalToolCallStartIdx);
+                if (beforeNat) { sendTextChunk(beforeNat); }
+                inNaturalToolCall = true;
+              }
+            }
+
+            if (inNaturalToolCall) {
+              const fromNatStart = fullText.length - textBuffer.length;
+              const subText = fullText.substring(fromNatStart);
+              const argsIdx = subText.indexOf('"arguments"');
+              if (argsIdx !== -1) {
+                const braceSearchFrom = subText.indexOf('{', argsIdx);
+                if (braceSearchFrom !== -1) {
+                  const balanced = extractBalancedJson(subText, braceSearchFrom);
+                  if (balanced) {
+                    inNaturalToolCall = false;
+                    naturalToolCallStartIdx = -1;
+                    textBuffer = '';
+                  }
+                }
+              }
+            }
+
+            if (!inToolCall && !inNaturalToolCall) {
               const safeLen = textBuffer.length - toolCallStartLength();
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
-                const delta = { content: safeText };
-                if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
-                isFirstTextChunk = false;
-                res.write(`data: ${JSON.stringify({
-                  id: `chatcmpl-${Date.now()}`,
-                  object: 'chat.completion.chunk',
-                  created: Math.floor(Date.now() / 1000),
-                  model: model,
-                  choices: [{ index: 0, delta, finish_reason: null }]
-                })}\n\n`);
+                sendTextChunk(safeText);
               }
             }
           } else {
-            // 没有工具定义，直接发送
             flushTextBuffer();
           }
         }
@@ -572,14 +614,11 @@ app.post('/v1/chat/completions', async (req, res) => {
       reader.on('end', () => {
         if (buffer.trim()) processLine(buffer);
 
-        // 流式结束后处理剩余内容
         const toolCalls = tools ? parseToolCalls(fullText) : [];
         const hasToolCalls = toolCalls.length > 0;
 
         if (hasToolCalls) {
-          // 发送剩余的纯文本（标记已被过滤）
           const cleanText = stripToolCalls(fullText);
-          // 流式中可能已经发送了部分文本，这里只发工具调用
           const formattedCalls = formatToolCalls(toolCalls);
 
           for (let i = 0; i < formattedCalls.length; i++) {
@@ -605,8 +644,7 @@ app.post('/v1/chat/completions', async (req, res) => {
               }]
             })}\n\n`);
           }
-        } else if (textBuffer) {
-          // 没有工具调用，发送剩余缓冲文本
+        } else if (textBuffer && !inNaturalToolCall) {
           const delta = { content: textBuffer };
           if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
           res.write(`data: ${JSON.stringify({
@@ -896,7 +934,11 @@ app.post('/v1/messages', async (req, res) => {
       let buffer = '';
       let textBuffer = '';
       let inToolCall = false;
+      let inNaturalToolCall = false;
+      let naturalToolCallStartIdx = -1;
       const reader = response.body;
+
+      const NATURAL_TOOL_PATTERN = /"?name"?\s*:\s*"[^"]+"\s*,\s*"?arguments"?\s*:\s*\{/;
 
       // 发送 message_start 事件
       res.write(`event: message_start\ndata: ${JSON.stringify({
@@ -921,7 +963,7 @@ app.post('/v1/messages', async (req, res) => {
       let toolBlocksStarted = [];  // 跟踪已开始的 tool_use block 索引
 
       function flushTextAsContent() {
-        if (textBuffer && !inToolCall) {
+        if (textBuffer && !inToolCall && !inNaturalToolCall) {
           if (!textBlockStarted) {
             res.write(`event: content_block_start\ndata: ${JSON.stringify({
               type: 'content_block_start',
@@ -972,7 +1014,7 @@ app.post('/v1/messages', async (req, res) => {
           if (tools) {
             const startMatch = detectToolCallStart(textBuffer);
             if (startMatch.index !== -1 && !inToolCall) {
-              // 先发送标记前的文本
+              if (inNaturalToolCall) { inNaturalToolCall = false; naturalToolCallStartIdx = -1; }
               const beforeTag = textBuffer.substring(0, startMatch.index);
               textBuffer = textBuffer.substring(startMatch.index);
               if (beforeTag) {
@@ -1003,18 +1045,65 @@ app.post('/v1/messages', async (req, res) => {
               }
             }
 
-            if (!inToolCall && !textBlockStarted) {
+            if (!inToolCall && !inNaturalToolCall) {
+              const natMatch = NATURAL_TOOL_PATTERN.exec(textBuffer);
+              if (natMatch) {
+                naturalToolCallStartIdx = natMatch.index;
+                const beforeNat = textBuffer.substring(0, naturalToolCallStartIdx);
+                textBuffer = textBuffer.substring(naturalToolCallStartIdx);
+                if (beforeNat) {
+                  if (!textBlockStarted) {
+                    const blockIdx = thinkingBlockStarted ? 1 : 0;
+                    res.write(`event: content_block_start\ndata: ${JSON.stringify({
+                      type: 'content_block_start',
+                      index: blockIdx,
+                      content_block: { type: 'text', text: '' }
+                    })}\n\n`);
+                    textBlockStarted = true;
+                  }
+                  const blockIdx = thinkingBlockStarted ? 1 : 0;
+                  res.write(`event: content_block_delta\ndata: ${JSON.stringify({
+                    type: 'content_block_delta',
+                    index: blockIdx,
+                    delta: { type: 'text_delta', text: beforeNat }
+                  })}\n\n`);
+                }
+                inNaturalToolCall = true;
+              }
+            }
+
+            if (inNaturalToolCall) {
+              const fromNatStart = fullText.length - textBuffer.length;
+              const subText = fullText.substring(fromNatStart);
+              const argsIdx = subText.indexOf('"arguments"');
+              if (argsIdx !== -1) {
+                const braceSearchFrom = subText.indexOf('{', argsIdx);
+                if (braceSearchFrom !== -1) {
+                  const balanced = extractBalancedJson(subText, braceSearchFrom);
+                  if (balanced) {
+                    inNaturalToolCall = false;
+                    naturalToolCallStartIdx = -1;
+                    textBuffer = '';
+                  }
+                }
+              }
+            }
+
+            if (!inToolCall && !inNaturalToolCall) {
               const safeLen = textBuffer.length - toolCallStartLength();
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
+                if (!textBlockStarted) {
+                  const blockIdx = thinkingBlockStarted ? 1 : 0;
+                  res.write(`event: content_block_start\ndata: ${JSON.stringify({
+                    type: 'content_block_start',
+                    index: blockIdx,
+                    content_block: { type: 'text', text: '' }
+                  })}\n\n`);
+                  textBlockStarted = true;
+                }
                 const blockIdx = thinkingBlockStarted ? 1 : 0;
-                res.write(`event: content_block_start\ndata: ${JSON.stringify({
-                  type: 'content_block_start',
-                  index: blockIdx,
-                  content_block: { type: 'text', text: '' }
-                })}\n\n`);
-                textBlockStarted = true;
                 res.write(`event: content_block_delta\ndata: ${JSON.stringify({
                   type: 'content_block_delta',
                   index: blockIdx,
@@ -1105,7 +1194,7 @@ app.post('/v1/messages', async (req, res) => {
             index: 0,
             content_block: { type: 'text', text: '' }
           })}\n\n`);
-          if (textBuffer) {
+          if (textBuffer && !inNaturalToolCall) {
             res.write(`event: content_block_delta\ndata: ${JSON.stringify({
               type: 'content_block_delta',
               index: 0,
