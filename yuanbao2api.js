@@ -108,10 +108,12 @@ function buildToolSystemPrompt(tools) {
   ].join('\n');
 }
 
-// 解析模型输出中的工具调用（兼容 Unicode 和 ASCII 两种标记格式）
+// 解析模型输出中的工具调用（兼容 Unicode 和 ASCII 两种标记格式，以及自然语言格式）
 function parseToolCalls(text) {
   const calls = [];
   let searchFrom = 0;
+
+  // 方法1：尝试匹配标记格式
   while (searchFrom < text.length) {
     const startMatch = detectToolCallStart(text, searchFrom);
     if (startMatch.index === -1 || !startMatch.tag) break;
@@ -131,12 +133,34 @@ function parseToolCalls(text) {
     }
     searchFrom = endMatch.index + endMatch.tag.length;
   }
+
+  // 方法2：如果没有找到标记格式，尝试匹配自然语言格式
+  // 匹配: name": "函数名", "arguments": {...}
+  // 或: "name": "函数名", "arguments": {...}
+  if (calls.length === 0) {
+    const naturalPattern = /(?:^|(?<=[^{]))\s*"?name"?\s*:\s*"([^"]+)"\s*,\s*"?arguments"?\s*:\s*(\{[^}]*\}|\[\]|\{\})/g;
+    let match;
+    while ((match = naturalPattern.exec(text)) !== null) {
+      try {
+        const name = match[1];
+        const argsStr = match[2];
+        const args = JSON.parse(argsStr);
+        calls.push({
+          name: name,
+          arguments: typeof args === 'string' ? args : JSON.stringify(args)
+        });
+      } catch {
+        // 解析失败，跳过
+      }
+    }
+  }
+
   return calls;
 }
 
-// 从文本中移除工具调用标记，返回纯文本内容（兼容两种标记格式）
+// 从文本中移除工具调用标记，返回纯文本内容（兼容两种标记格式和自然语言格式）
 function stripToolCalls(text) {
-  // 反复检测并移除，直到没有标记
+  // 先移除标记格式的工具调用
   let result = text;
   while (true) {
     const startMatch = detectToolCallStart(result);
@@ -145,6 +169,12 @@ function stripToolCalls(text) {
     if (endMatch.index === -1 || !endMatch.tag) break;
     result = result.substring(0, startMatch.index) + result.substring(endMatch.index + endMatch.tag.length);
   }
+
+  // 再移除自然语言格式的工具调用片段
+  // 匹配: name": "函数名", "arguments": {...}
+  // 使用零宽断言避免消耗前面的字符
+  result = result.replace(/(?:^|(?<=[^{]))\s*"?name"?\s*:\s*"[^"]+"\s*,\s*"?arguments"?\s*:\s*(?:\{[^}]*\}|\[\]|\{\})/g, '');
+
   return result.trim();
 }
 
