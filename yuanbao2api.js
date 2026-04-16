@@ -68,6 +68,29 @@ function toolCallStartLength() {
   return Math.max(TOOL_CALL_START_UNICODE.length, TOOL_CALL_START_ASCII.length);
 }
 
+// 自然格式工具调用可能的前缀字符数（最大回溯窗口）
+// 覆盖: {  {"  {"name"  等逐步出现的情况
+const NATURAL_TOOL_PREFIX_LOOKBACK = 80;
+
+// 判断 textBuffer 末尾是否可能是自然格式工具调用的前缀
+// 返回需要保留在 buffer 中的字符数（从末尾算起），0 表示可以全部安全发送
+function naturalToolPrefixLookback(textBuffer) {
+  if (!textBuffer) return 0;
+  // 从 buffer 末尾往前扫描，找可能是 JSON 对象开头的 {
+  // 只关注 { 后面紧跟 " 的情况（工具调用 JSON 通常以 {"name" 开头）
+  for (let i = textBuffer.length - 1; i >= Math.max(0, textBuffer.length - NATURAL_TOOL_PREFIX_LOOKBACK); i--) {
+    if (textBuffer[i] === '{') {
+      const after = textBuffer.substring(i + 1);
+      // { 后面紧跟 " 或空白+" —— 这是 JSON 对象开头的典型模式
+      const trimmedAfter = after.trimStart();
+      if (trimmedAfter === '' || trimmedAfter.startsWith('"')) {
+        return textBuffer.length - i;
+      }
+    }
+  }
+  return 0;
+}
+
 // 生成临时会话 ID
 function generateConversationId() {
   return uuidv4();
@@ -464,7 +487,9 @@ app.post('/v1/chat/completions', async (req, res) => {
     });
 
     if (!response.ok) {
-      throw new Error(`Yuanbao API error: ${response.status}`);
+      const errorBody = await response.text().catch(() => '');
+      console.error(`Yuanbao API error: status=${response.status}, body=${errorBody.substring(0, 500)}`);
+      throw new Error(`Yuanbao API error: ${response.status} - ${errorBody.substring(0, 200)}`);
     }
 
     if (stream) {
@@ -557,6 +582,8 @@ app.post('/v1/chat/completions', async (req, res) => {
               const endMatch = detectToolCallEnd(fullText);
               if (endMatch.index !== -1) {
                 inToolCall = false;
+                // 将标记结束后的残余文本放回 textBuffer
+                textBuffer = fullText.substring(endMatch.index + endMatch.tag.length);
               }
             }
 
@@ -582,14 +609,20 @@ app.post('/v1/chat/completions', async (req, res) => {
                   if (balanced) {
                     inNaturalToolCall = false;
                     naturalToolCallStartIdx = -1;
-                    textBuffer = '';
+                    // 将 JSON 之后可能存在的残余文本放回 textBuffer
+                    const afterJsonStart = fromNatStart + braceSearchFrom + balanced.length;
+                    textBuffer = fullText.substring(afterJsonStart);
                   }
                 }
               }
             }
 
             if (!inToolCall && !inNaturalToolCall) {
-              const safeLen = textBuffer.length - toolCallStartLength();
+              // 保守发送：同时保留标记格式和自然格式工具调用的前缀缓冲
+              const tagLookback = toolCallStartLength();
+              const natLookback = naturalToolPrefixLookback(textBuffer);
+              const lookback = Math.max(tagLookback, natLookback);
+              const safeLen = textBuffer.length - lookback;
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
@@ -602,7 +635,42 @@ app.post('/v1/chat/completions', async (req, res) => {
         }
       }
 
+      // 流式超时保护：120秒无数据则强制结束
+      let streamTimeout = setTimeout(() => {
+        console.error('Stream timeout (OpenAI): no data for 120s, forcing end');
+        try {
+          res.write(`data: ${JSON.stringify({
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: model,
+            choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+          })}\n\n`);
+          res.write('data: [DONE]\n\n');
+        } catch (e) {}
+        try { res.end(); } catch (e) {}
+      }, 120000);
+
+      function resetStreamTimeout() {
+        clearTimeout(streamTimeout);
+        streamTimeout = setTimeout(() => {
+          console.error('Stream timeout (OpenAI): no data for 120s, forcing end');
+          try {
+            res.write(`data: ${JSON.stringify({
+              id: `chatcmpl-${Date.now()}`,
+              object: 'chat.completion.chunk',
+              created: Math.floor(Date.now() / 1000),
+              model: model,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }]
+            })}\n\n`);
+            res.write('data: [DONE]\n\n');
+          } catch (e) {}
+          try { res.end(); } catch (e) {}
+        }, 120000);
+      }
+
       reader.on('data', (chunk) => {
+        resetStreamTimeout();
         buffer += chunk.toString();
         const parts = buffer.split('\n');
         buffer = parts.pop();
@@ -612,7 +680,10 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
 
       reader.on('end', () => {
+        clearTimeout(streamTimeout);
         if (buffer.trim()) processLine(buffer);
+
+        console.log(`[OpenAI Stream End] fullText length=${fullText.length}, thinkingText length=${thinkingText.length}, buffer remaining=${buffer.length}`);
 
         const toolCalls = tools ? parseToolCalls(fullText) : [];
         const hasToolCalls = toolCalls.length > 0;
@@ -665,6 +736,24 @@ app.post('/v1/chat/completions', async (req, res) => {
           choices: [{ index: 0, delta: {}, finish_reason: finishReason }]
         })}\n\n`);
         res.write('data: [DONE]\n\n');
+        res.end();
+      });
+
+      reader.on('error', (err) => {
+        console.error('Stream reader error:', err);
+        try {
+          const finishReason = parseToolCalls(fullText).length > 0 ? 'tool_calls' : 'stop';
+          res.write(`data: ${JSON.stringify({
+            id: `chatcmpl-${Date.now()}`,
+            object: 'chat.completion.chunk',
+            created: Math.floor(Date.now() / 1000),
+            model: model,
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }]
+          })}\n\n`);
+          res.write('data: [DONE]\n\n');
+        } catch (e) {
+          // ignore write errors
+        }
         res.end();
       });
 
@@ -918,7 +1007,9 @@ app.post('/v1/messages', async (req, res) => {
     });
 
     if (!response.ok) {
-      throw new Error(`Yuanbao API error: ${response.status}`);
+      const errorBody = await response.text().catch(() => '');
+      console.error(`Yuanbao API error: status=${response.status}, body=${errorBody.substring(0, 500)}`);
+      throw new Error(`Yuanbao API error: ${response.status} - ${errorBody.substring(0, 200)}`);
     }
 
     const msgId = `msg_${uuidv4().replace(/-/g, '').slice(0, 24)}`;
@@ -1042,6 +1133,8 @@ app.post('/v1/messages', async (req, res) => {
               const endMatch = detectToolCallEnd(fullText);
               if (endMatch.index !== -1) {
                 inToolCall = false;
+                // 将标记结束后的残余文本放回 textBuffer
+                textBuffer = fullText.substring(endMatch.index + endMatch.tag.length);
               }
             }
 
@@ -1083,14 +1176,19 @@ app.post('/v1/messages', async (req, res) => {
                   if (balanced) {
                     inNaturalToolCall = false;
                     naturalToolCallStartIdx = -1;
-                    textBuffer = '';
+                    // 将 JSON 之后可能存在的残余文本放回 textBuffer
+                    const afterJsonStart = fromNatStart + braceSearchFrom + balanced.length;
+                    textBuffer = fullText.substring(afterJsonStart);
                   }
                 }
               }
             }
 
             if (!inToolCall && !inNaturalToolCall) {
-              const safeLen = textBuffer.length - toolCallStartLength();
+              const tagLookback = toolCallStartLength();
+              const natLookback = naturalToolPrefixLookback(textBuffer);
+              const lookback = Math.max(tagLookback, natLookback);
+              const safeLen = textBuffer.length - lookback;
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
@@ -1117,7 +1215,52 @@ app.post('/v1/messages', async (req, res) => {
         }
       }
 
+      // 流式超时保护：120秒无数据则强制结束
+      let streamTimeout = setTimeout(() => {
+        console.error('Stream timeout (Anthropic): no data for 120s, forcing end');
+        try {
+          if (textBlockStarted) {
+            const blockIdx = thinkingBlockStarted ? 1 : 0;
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIdx })}\n\n`);
+          }
+          if (thinkingBlockStarted) {
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+          }
+          res.write(`event: message_delta\ndata: ${JSON.stringify({
+            type: 'message_delta',
+            delta: { stop_reason: 'end_turn', stop_sequence: null },
+            usage: { output_tokens: 0 }
+          })}\n\n`);
+          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+        } catch (e) {}
+        try { res.end(); } catch (e) {}
+      }, 120000);
+
+      function resetStreamTimeout() {
+        clearTimeout(streamTimeout);
+        streamTimeout = setTimeout(() => {
+          console.error('Stream timeout (Anthropic): no data for 120s, forcing end');
+          try {
+            if (textBlockStarted) {
+              const blockIdx = thinkingBlockStarted ? 1 : 0;
+              res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIdx })}\n\n`);
+            }
+            if (thinkingBlockStarted) {
+              res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+            }
+            res.write(`event: message_delta\ndata: ${JSON.stringify({
+              type: 'message_delta',
+              delta: { stop_reason: 'end_turn', stop_sequence: null },
+              usage: { output_tokens: 0 }
+            })}\n\n`);
+            res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+          } catch (e) {}
+          try { res.end(); } catch (e) {}
+        }, 120000);
+      }
+
       reader.on('data', (chunk) => {
+        resetStreamTimeout();
         buffer += chunk.toString();
         const parts = buffer.split('\n');
         buffer = parts.pop();
@@ -1127,7 +1270,10 @@ app.post('/v1/messages', async (req, res) => {
       });
 
       reader.on('end', () => {
+        clearTimeout(streamTimeout);
         if (buffer.trim()) processLine(buffer);
+
+        console.log(`[Anthropic Stream End] fullText length=${fullText.length}, thinkingText length=${thinkingText.length}, buffer remaining=${buffer.length}`);
 
         // 流式结束：处理工具调用
         const toolCalls = tools ? parseToolCalls(fullText) : [];
@@ -1219,6 +1365,30 @@ app.post('/v1/messages', async (req, res) => {
           type: 'message_stop'
         })}\n\n`);
 
+        res.end();
+      });
+
+      reader.on('error', (err) => {
+        console.error('Anthropic stream reader error:', err);
+        try {
+          // 尝试关闭已开始的 blocks 并发送完成事件
+          const stopReason = parseToolCalls(fullText).length > 0 ? 'tool_use' : 'end_turn';
+          if (textBlockStarted) {
+            const blockIdx = thinkingBlockStarted ? 1 : 0;
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: blockIdx })}\n\n`);
+          }
+          if (thinkingBlockStarted) {
+            res.write(`event: content_block_stop\ndata: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+          }
+          res.write(`event: message_delta\ndata: ${JSON.stringify({
+            type: 'message_delta',
+            delta: { stop_reason: stopReason, stop_sequence: null },
+            usage: { output_tokens: 0 }
+          })}\n\n`);
+          res.write(`event: message_stop\ndata: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+        } catch (e) {
+          // ignore write errors
+        }
         res.end();
       });
 
