@@ -91,6 +91,21 @@ function naturalToolPrefixLookback(textBuffer) {
   return 0;
 }
 
+// 工具结果最大字符数（超出截断，防止 prompt 膨胀导致元宝 API 断连）
+const MAX_TOOL_RESULT_LENGTH = 4000;
+
+// 截断过长的工具结果，保留关键信息
+function truncateToolResult(content, maxLength = MAX_TOOL_RESULT_LENGTH) {
+  if (!content || content.length <= maxLength) return content;
+  const truncated = content.substring(0, maxLength);
+  // 尝试在最后一个完整 JSON 对象处截断
+  const lastBrace = truncated.lastIndexOf('}');
+  if (lastBrace > maxLength * 0.5) {
+    return truncated.substring(0, lastBrace + 1) + '\n...[结果已截断，原始长度: ' + content.length + ' 字符]';
+  }
+  return truncated + '\n...[结果已截断，原始长度: ' + content.length + ' 字符]';
+}
+
 // 生成临时会话 ID
 function generateConversationId() {
   return uuidv4();
@@ -361,9 +376,10 @@ app.post('/v1/chat/completions', async (req, res) => {
           prompt = `[系统提示: ${msg.content}${toolPart}]\n\n` + prompt;
           systemInjected = true;
         } else if (msg.role === 'tool') {
-          // 工具结果消息
+          // 工具结果消息（截断过长结果防止 prompt 膨胀）
           const toolName = msg.name || 'unknown';
-          prompt += `工具 ${toolName} 的执行结果:\n${msg.content}\n\n`;
+          const truncatedContent = truncateToolResult(msg.content);
+          prompt += `工具 ${toolName} 的执行结果:\n${truncatedContent}\n\n`;
         } else if (msg.role === 'assistant') {
           // 助手消息，可能包含工具调用
           if (msg.tool_calls && msg.tool_calls.length > 0) {
@@ -470,6 +486,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     console.log('chatModelId:', chatModelId);
     console.log('modelId:', modelId);
     console.log('subModelId:', subModelId);
+    console.log('prompt length:', prompt.length, 'chars');
     console.log('Request Body:', JSON.stringify(yuanbaoRequest, null, 2));
     console.log('========================');
 
@@ -843,12 +860,13 @@ function anthropicMessagesToPrompt(messages, tools) {
         : msg.content.map(block => {
             if (block.type === 'text') return block.text;
             if (block.type === 'tool_result') {
-              const resultContent = typeof block.content === 'string'
+              const rawContent = typeof block.content === 'string'
                 ? block.content
                 : Array.isArray(block.content)
                   ? block.content.map(c => c.text || '').join('\n')
                   : JSON.stringify(block.content);
-              return `工具 ${block.tool_use_id} 的执行结果:\n${resultContent}`;
+              const truncatedContent = truncateToolResult(rawContent);
+              return `工具 ${block.tool_use_id} 的执行结果:\n${truncatedContent}`;
             }
             return '';
           }).join('\n');
