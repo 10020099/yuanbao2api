@@ -40,9 +40,33 @@ const serverConfig = {
 // 会话管理（用于支持多轮对话）
 const sessions = new Map();
 
-// 工具调用标记
-const TOOL_CALL_START = '<｜tool▁calls_begin｜>';
-const TOOL_CALL_END = '<｜tool▁calls_end｜>';
+// 工具调用标记（Unicode 版本，DeepSeek 原始格式）
+const TOOL_CALL_START_UNICODE = '<｜tool▁calls_begin｜>';
+const TOOL_CALL_END_UNICODE = '<｜tool▁calls_end｜>';
+// 工具调用标记（ASCII 版本，部分模型/平台实际输出的格式）
+const TOOL_CALL_START_ASCII = '<|tool_calls_begin|>';
+const TOOL_CALL_END_ASCII = '<|tool_calls_end|>';
+
+// 兼容两种标记格式：优先匹配 Unicode 版本，回退到 ASCII 版本
+function detectToolCallStart(text, fromIndex = 0) {
+  const uIdx = text.indexOf(TOOL_CALL_START_UNICODE, fromIndex);
+  const aIdx = text.indexOf(TOOL_CALL_START_ASCII, fromIndex);
+  if (uIdx === -1) return { index: aIdx, tag: aIdx === -1 ? null : TOOL_CALL_START_ASCII };
+  if (aIdx === -1) return { index: uIdx, tag: TOOL_CALL_START_UNICODE };
+  return uIdx <= aIdx ? { index: uIdx, tag: TOOL_CALL_START_UNICODE } : { index: aIdx, tag: TOOL_CALL_START_ASCII };
+}
+
+function detectToolCallEnd(text, fromIndex = 0) {
+  const uIdx = text.indexOf(TOOL_CALL_END_UNICODE, fromIndex);
+  const aIdx = text.indexOf(TOOL_CALL_END_ASCII, fromIndex);
+  if (uIdx === -1) return { index: aIdx, tag: aIdx === -1 ? null : TOOL_CALL_END_ASCII };
+  if (aIdx === -1) return { index: uIdx, tag: TOOL_CALL_END_UNICODE };
+  return uIdx <= aIdx ? { index: uIdx, tag: TOOL_CALL_END_UNICODE } : { index: aIdx, tag: TOOL_CALL_END_ASCII };
+}
+
+function toolCallStartLength() {
+  return Math.max(TOOL_CALL_START_UNICODE.length, TOOL_CALL_START_ASCII.length);
+}
 
 // 生成临时会话 ID
 function generateConversationId() {
@@ -65,9 +89,9 @@ function buildToolSystemPrompt(tools) {
     '',
     '# 可用工具',
     '你可以调用以下工具来完成任务。当你需要调用工具时，必须严格按照以下格式输出，不要输出任何其他内容包裹此标记：',
-    TOOL_CALL_START,
+    TOOL_CALL_START_ASCII,
     '{"name": "函数名", "arguments": {"参数名": "参数值"}}',
-    TOOL_CALL_END,
+    TOOL_CALL_END_ASCII,
     '',
     '你可以同时调用多个工具，每个工具调用使用单独的标记对。',
     '如果你不需要调用任何工具，直接回复用户即可，不要输出标记。',
@@ -78,17 +102,18 @@ function buildToolSystemPrompt(tools) {
   ].join('\n');
 }
 
-// 解析模型输出中的工具调用
+// 解析模型输出中的工具调用（兼容 Unicode 和 ASCII 两种标记格式）
 function parseToolCalls(text) {
   const calls = [];
-  const regex = new RegExp(
-    escapeRegex(TOOL_CALL_START) + '\\s*([\\s\\S]*?)\\s*' + escapeRegex(TOOL_CALL_END),
-    'g'
-  );
-  let match;
-  while ((match = regex.exec(text)) !== null) {
+  let searchFrom = 0;
+  while (searchFrom < text.length) {
+    const startMatch = detectToolCallStart(text, searchFrom);
+    if (startMatch.index === -1 || !startMatch.tag) break;
+    const endMatch = detectToolCallEnd(text, startMatch.index + startMatch.tag.length);
+    if (endMatch.index === -1 || !endMatch.tag) break;
+    const content = text.substring(startMatch.index + startMatch.tag.length, endMatch.index).trim();
     try {
-      const parsed = JSON.parse(match[1].trim());
+      const parsed = JSON.parse(content);
       calls.push({
         name: parsed.name,
         arguments: typeof parsed.arguments === 'string'
@@ -96,28 +121,28 @@ function parseToolCalls(text) {
           : JSON.stringify(parsed.arguments)
       });
     } catch {
-      const raw = match[1].trim();
-      calls.push({ name: 'unknown', arguments: raw });
+      calls.push({ name: 'unknown', arguments: content });
     }
+    searchFrom = endMatch.index + endMatch.tag.length;
   }
   return calls;
 }
 
-// 从文本中移除工具调用标记，返回纯文本内容
+// 从文本中移除工具调用标记，返回纯文本内容（兼容两种标记格式）
 function stripToolCalls(text) {
-  return text.replace(
-    new RegExp(
-      escapeRegex(TOOL_CALL_START) + '[\\s\\S]*?' + escapeRegex(TOOL_CALL_END),
-      'g'
-    ),
-    ''
-  ).trim();
+  // 反复检测并移除，直到没有标记
+  let result = text;
+  while (true) {
+    const startMatch = detectToolCallStart(result);
+    if (startMatch.index === -1 || !startMatch.tag) break;
+    const endMatch = detectToolCallEnd(result, startMatch.index + startMatch.tag.length);
+    if (endMatch.index === -1 || !endMatch.tag) break;
+    result = result.substring(0, startMatch.index) + result.substring(endMatch.index + endMatch.tag.length);
+  }
+  return result.trim();
 }
 
-// 转义正则特殊字符
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
+
 
 // 为工具调用生成 OpenAI 格式的 tool_calls 数组
 function formatToolCalls(calls, startIndex = 0) {
@@ -442,12 +467,12 @@ app.post('/v1/chat/completions', async (req, res) => {
           textBuffer += data.msg;
 
           if (tools) {
-            // 检测工具调用标记的开始
-            const startIdx = textBuffer.indexOf(TOOL_CALL_START);
-            if (startIdx !== -1 && !inToolCall) {
+            // 检测工具调用标记的开始（兼容 Unicode 和 ASCII 格式）
+            const startMatch = detectToolCallStart(textBuffer);
+            if (startMatch.index !== -1 && !inToolCall) {
               // 先把标记前的文本发出去
-              const beforeTag = textBuffer.substring(0, startIdx);
-              textBuffer = textBuffer.substring(startIdx);
+              const beforeTag = textBuffer.substring(0, startMatch.index);
+              textBuffer = textBuffer.substring(startMatch.index);
               if (beforeTag) {
                 const delta = { content: beforeTag };
                 if (isFirstTextChunk && isFirstThinkChunk) { delta.role = 'assistant'; }
@@ -466,8 +491,8 @@ app.post('/v1/chat/completions', async (req, res) => {
 
             // 检测工具调用标记的结束
             if (inToolCall) {
-              const endIdx = fullText.indexOf(TOOL_CALL_END);
-              if (endIdx !== -1) {
+              const endMatch = detectToolCallEnd(fullText);
+              if (endMatch.index !== -1) {
                 inToolCall = false;
                 // 标记之后的文本继续缓冲
               }
@@ -476,7 +501,7 @@ app.post('/v1/chat/completions', async (req, res) => {
             // 如果不在工具调用标记内，且有足够缓冲，安全地发送文本
             if (!inToolCall) {
               // 保留可能的不完整标记前缀
-              const safeLen = textBuffer.length - TOOL_CALL_START.length;
+              const safeLen = textBuffer.length - toolCallStartLength();
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
@@ -909,11 +934,11 @@ app.post('/v1/messages', async (req, res) => {
           textBuffer += data.msg;
 
           if (tools) {
-            const startIdx = textBuffer.indexOf(TOOL_CALL_START);
-            if (startIdx !== -1 && !inToolCall) {
+            const startMatch = detectToolCallStart(textBuffer);
+            if (startMatch.index !== -1 && !inToolCall) {
               // 先发送标记前的文本
-              const beforeTag = textBuffer.substring(0, startIdx);
-              textBuffer = textBuffer.substring(startIdx);
+              const beforeTag = textBuffer.substring(0, startMatch.index);
+              textBuffer = textBuffer.substring(startMatch.index);
               if (beforeTag) {
                 if (!textBlockStarted) {
                   const blockIdx = thinkingBlockStarted ? 1 : 0;
@@ -936,14 +961,14 @@ app.post('/v1/messages', async (req, res) => {
             }
 
             if (inToolCall) {
-              const endIdx = fullText.indexOf(TOOL_CALL_END);
-              if (endIdx !== -1) {
+              const endMatch = detectToolCallEnd(fullText);
+              if (endMatch.index !== -1) {
                 inToolCall = false;
               }
             }
 
             if (!inToolCall && !textBlockStarted) {
-              const safeLen = textBuffer.length - TOOL_CALL_START.length;
+              const safeLen = textBuffer.length - toolCallStartLength();
               if (safeLen > 0) {
                 const safeText = textBuffer.substring(0, safeLen);
                 textBuffer = textBuffer.substring(safeLen);
