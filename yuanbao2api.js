@@ -92,12 +92,49 @@ function naturalToolPrefixLookback(textBuffer) {
 }
 
 // 工具结果最大字符数（超出截断，防止 prompt 膨胀导致元宝 API 断连）
-const MAX_TOOL_RESULT_LENGTH = 4000;
+const MAX_TOOL_RESULT_LENGTH = 3000;
+// Prompt 总长度上限（超过则截断历史消息）
+const MAX_PROMPT_LENGTH = 8000;
+
+// 智能压缩工具结果：尝试提取关键字段，去掉冗余数据
+function compressToolResult(content) {
+  if (!content) return content;
+  // 尝试解析为 JSON，提取结构化搜索结果中的关键信息
+  try {
+    const parsed = JSON.parse(content);
+    // Tavily 搜索结果格式：{ query, results: [...], answer, ... }
+    if (parsed && parsed.results && Array.isArray(parsed.results)) {
+      const summary = {
+        query: parsed.query || undefined,
+        answer: parsed.answer || undefined
+      };
+      summary.results = parsed.results.map(r => ({
+        title: r.title || undefined,
+        url: r.url || undefined,
+        content: r.content ? (r.content.length > 200 ? r.content.substring(0, 200) + '...' : r.content) : undefined,
+        score: r.score || undefined
+      }));
+      return JSON.stringify(summary);
+    }
+    // 如果有 structuredContent 冗余，只保留一层
+    if (parsed && parsed.structuredContent && parsed.content) {
+      // content 和 structuredContent 往往重复，只保留 structuredContent
+      const { content: _c, ...rest } = parsed;
+      return JSON.stringify(rest);
+    }
+  } catch {
+    // 不是 JSON，原样返回
+  }
+  return content;
+}
 
 // 截断过长的工具结果，保留关键信息
 function truncateToolResult(content, maxLength = MAX_TOOL_RESULT_LENGTH) {
-  if (!content || content.length <= maxLength) return content;
-  const truncated = content.substring(0, maxLength);
+  if (!content) return content;
+  // 先尝试智能压缩
+  const compressed = compressToolResult(content);
+  if (compressed.length <= maxLength) return compressed;
+  const truncated = compressed.substring(0, maxLength);
   // 尝试在最后一个完整 JSON 对象处截断
   const lastBrace = truncated.lastIndexOf('}');
   if (lastBrace > maxLength * 0.5) {
@@ -404,6 +441,70 @@ app.post('/v1/chat/completions', async (req, res) => {
       prompt += toolSystemPrompt;
     }
 
+    // Prompt 总长度限制：超过阈值时从最早的消息开始逐个截断工具结果
+    if (prompt.length > MAX_PROMPT_LENGTH && messages.length > 1) {
+      // 第一轮：把所有工具结果都压缩到更短
+      for (let i = 0; i < messages.length; i++) {
+        if (messages[i].role === 'tool' && messages[i].content) {
+          const compressed = truncateToolResult(messages[i].content, 1000);
+          if (compressed !== messages[i].content) {
+            messages[i].content = compressed;
+          }
+        }
+      }
+      // 重新构建 prompt（简单重新拼接）
+      prompt = '';
+      systemInjected = false;
+      if (toolSystemPrompt && !messages.some(m => m.role === 'system')) {
+        prompt = `[系统提示:${toolSystemPrompt}]\n\n`;
+        systemInjected = true;
+      }
+      if (messages.length === 1 && messages[0].role === 'user') {
+        prompt += messages[0].content;
+      } else {
+        for (let i = 0; i < messages.length; i++) {
+          const msg = messages[i];
+          if (msg.role === 'system') {
+            const toolPart = toolSystemPrompt ? `\n${toolSystemPrompt}` : '';
+            prompt = `[系统提示: ${msg.content}${toolPart}]\n\n` + prompt;
+            systemInjected = true;
+          } else if (msg.role === 'tool') {
+            const toolName = msg.name || 'unknown';
+            const truncatedContent = truncateToolResult(msg.content, 1000);
+            prompt += `工具 ${toolName} 的执行结果:\n${truncatedContent}\n\n`;
+          } else if (msg.role === 'assistant') {
+            if (msg.tool_calls && msg.tool_calls.length > 0) {
+              const callDescriptions = msg.tool_calls.map(tc =>
+                `调用工具 ${tc.function.name}，参数: ${tc.function.arguments}`
+              ).join('\n');
+              prompt += `助手: 我需要调用工具来完成任务。\n${callDescriptions}\n`;
+            } else {
+              prompt += `助手: ${msg.content}\n`;
+            }
+          } else if (msg.role === 'user') {
+            prompt += `用户: ${msg.content}\n`;
+          }
+        }
+        prompt += '\n请作为助手继续回复：';
+      }
+      if (toolSystemPrompt && !systemInjected) {
+        prompt += toolSystemPrompt;
+      }
+    }
+
+    // 如果仍然超长，做最后的硬截断
+    if (prompt.length > MAX_PROMPT_LENGTH * 1.5) {
+      const systemPart = prompt.indexOf(']\n\n');
+      if (systemPart !== -1) {
+        const systemEnd = systemPart + 4;
+        const remaining = MAX_PROMPT_LENGTH * 1.5 - systemEnd;
+        prompt = prompt.substring(0, systemEnd) + prompt.substring(prompt.length - remaining);
+        prompt += '\n[...历史消息已截断...]';
+      } else {
+        prompt = prompt.substring(0, MAX_PROMPT_LENGTH * 1.5) + '\n[...已截断...]';
+      }
+    }
+
     // 生成或获取会话 ID（每次请求使用新的临时会话）
     const conversationId = generateConversationId();
     const agentId = process.env.YUANBAO_AGENT_ID || 'naQivTmsDa';
@@ -445,7 +546,7 @@ app.post('/v1/chat/completions', async (req, res) => {
       model: modelConfig.model,
       prompt: prompt,
       plugin: useDeepThinking ? '' : 'Adaptive',
-      displayPrompt: prompt,
+      displayPrompt: prompt.length > 2000 ? prompt.substring(0, 2000) + '...[已截断]' : prompt,
       displayPromptType: 1,
       agentId: agentId,
       isTemporary: true,
@@ -757,9 +858,39 @@ app.post('/v1/chat/completions', async (req, res) => {
       });
 
       reader.on('error', (err) => {
-        console.error('Stream reader error:', err);
+        clearTimeout(streamTimeout);
+        console.error('Stream reader error (OpenAI):', err.message || err);
         try {
-          const finishReason = parseToolCalls(fullText).length > 0 ? 'tool_calls' : 'stop';
+          // 尝试把已收集的内容发出去，避免客户端挂起
+          const toolCalls = parseToolCalls(fullText);
+          const hasToolCalls = toolCalls.length > 0;
+          if (hasToolCalls) {
+            const formattedCalls = formatToolCalls(toolCalls);
+            for (let i = 0; i < formattedCalls.length; i++) {
+              res.write(`data: ${JSON.stringify({
+                id: `chatcmpl-${Date.now()}`,
+                object: 'chat.completion.chunk',
+                created: Math.floor(Date.now() / 1000),
+                model: model,
+                choices: [{
+                  index: 0,
+                  delta: {
+                    tool_calls: [{
+                      index: i,
+                      id: formattedCalls[i].id,
+                      type: 'function',
+                      function: {
+                        name: formattedCalls[i].function.name,
+                        arguments: formattedCalls[i].function.arguments
+                      }
+                    }]
+                  },
+                  finish_reason: null
+                }]
+              })}\n\n`);
+            }
+          }
+          const finishReason = hasToolCalls ? 'tool_calls' : 'stop';
           res.write(`data: ${JSON.stringify({
             id: `chatcmpl-${Date.now()}`,
             object: 'chat.completion.chunk',
@@ -937,6 +1068,18 @@ app.post('/v1/messages', async (req, res) => {
     }
     prompt += rawPrompt;
 
+    // Prompt 总长度限制
+    if (prompt.length > MAX_PROMPT_LENGTH) {
+      // 截断 rawPrompt 部分（保留系统提示词）
+      const sysPrefix = prompt.substring(0, prompt.length - rawPrompt.length);
+      const maxRawLen = MAX_PROMPT_LENGTH - sysPrefix.length;
+      if (maxRawLen > 500) {
+        prompt = sysPrefix + rawPrompt.substring(rawPrompt.length - maxRawLen) + '\n[...历史消息已截断...]';
+      } else {
+        prompt = prompt.substring(0, MAX_PROMPT_LENGTH) + '\n[...已截断...]';
+      }
+    }
+
     // 获取模型配置
     const modelConfig = getModelConfig(requestModel);
     const conversationId = generateConversationId();
@@ -973,7 +1116,7 @@ app.post('/v1/messages', async (req, res) => {
       model: modelConfig.model,
       prompt: prompt,
       plugin: useDeepThinking ? '' : 'Adaptive',
-      displayPrompt: prompt,
+      displayPrompt: prompt.length > 2000 ? prompt.substring(0, 2000) + '...[已截断]' : prompt,
       displayPromptType: 1,
       agentId: agentId,
       isTemporary: true,
