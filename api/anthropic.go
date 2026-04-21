@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"yuanbao2api/internal/models"
 	"yuanbao2api/internal/utils"
 	"yuanbao2api/session"
@@ -47,7 +48,7 @@ func HandleAnthropicMessages(c *gin.Context) {
 	useInternetSearch := req.InternetSearch
 
 	// Convert messages
-	rawPrompt, toolSystemPrompt, systemInjected := anthropicMessagesToPrompt(req.Messages, req.Tools)
+	rawPrompt, toolSystemPrompt, _ := anthropicMessagesToPrompt(req.Messages, req.Tools)
 
 	// Handle system prompt
 	prompt := ""
@@ -261,7 +262,6 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 
 	var fullText strings.Builder
 	var thinkingText strings.Builder
-	var buffer string
 	var textBuffer string
 	inToolCall := false
 	inNaturalToolCall := false
@@ -460,7 +460,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					fullTextStr := fullText.String()
 					fromNatStart := len(fullTextStr) - len(textBuffer)
 					subText := fullTextStr[fromNatStart:]
-					if balanced := toolcall.ExtractBalancedJSONPublic(subText); balanced != "" {
+					if balanced := toolcall.ExtractBalancedJSONPublic(subText, 0); balanced != "" {
 						inNaturalToolCall = false
 						textBuffer = fullTextStr[fromNatStart+len(balanced):]
 					}

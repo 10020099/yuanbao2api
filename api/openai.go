@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -18,9 +19,13 @@ import (
 	"yuanbao2api/yuanbao"
 )
 
-// getEnv helper
-func getEnv(key string) string {
-	return os.Getenv(key)
+// getAgentID returns the Yuanbao agent ID from environment or default
+func getAgentID() string {
+	agentID := os.Getenv("YUANBAO_AGENT_ID")
+	if agentID == "" {
+		agentID = "naQivTmsDa"
+	}
+	return agentID
 }
 
 // HandleOpenAIChatCompletion processes OpenAI-compatible chat completion requests
@@ -91,15 +96,12 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 
 	var fullText strings.Builder
 	var thinkingText strings.Builder
-	var buffer string
 	var textBuffer string
 	isFirstThinkChunk := true
 	isFirstTextChunk := true
 	inToolCall := false
 	inNaturalToolCall := false
 	hasTools := len(tools) > 0
-
-	naturalToolPattern := `"?name"?\s*:\s*"[^"]+"\s*,\s*"?arguments"?\s*:\s*\{`
 
 	streamTimeout := time.NewTimer(120 * time.Second)
 	defer streamTimeout.Stop()
@@ -216,7 +218,7 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 					fullTextStr := fullText.String()
 					fromNatStart := len(fullTextStr) - len(textBuffer)
 					subText := fullTextStr[fromNatStart:]
-					if balanced := toolcall.ExtractBalancedJSONPublic(subText); balanced != "" {
+					if balanced := toolcall.ExtractBalancedJSONPublic(subText, 0); balanced != "" {
 						inNaturalToolCall = false
 						textBuffer = fullTextStr[fromNatStart+len(balanced):]
 					}
