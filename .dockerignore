@@ -10,8 +10,5 @@ package-lock.json
 yuanbao2api.js
 extract-config.js
 test.js
-node/
-.snow/
-AGENTS.md
-README.md
-LICENSE
+nodejs/
+

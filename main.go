@@ -39,8 +39,10 @@ func main() {
 		c.Next()
 	})
 
-	// Serve static files (management panel)
-	r.Static("/", "./public")
+	// Serve index.html at root
+	r.GET("/", func(c *gin.Context) {
+		c.File("./public/index.html")
+	})
 
 	// Health check
 	r.GET("/health", func(c *gin.Context) {

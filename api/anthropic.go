@@ -279,7 +279,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 	sendSSE := func(event string, data interface{}) {
 		dataJSON, _ := json.Marshal(data)
 		fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event, string(dataJSON))
-		c.Writer.(http.Flusher).Flush()
+		safeFlush(c.Writer)
 	}
 
 	// Send message_start
@@ -512,7 +512,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	done := make(chan bool)
+	done := make(chan bool, 1)
 	go func() {
 		for scanner.Scan() {
 			resetTimeout()

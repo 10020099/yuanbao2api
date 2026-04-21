@@ -28,6 +28,18 @@ func getAgentID() string {
 	return agentID
 }
 
+// safeFlush attempts to flush the response writer, recovering from any panic
+func safeFlush(w gin.ResponseWriter) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("Flush failed (connection likely closed): %v", r)
+		}
+	}()
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
 // HandleOpenAIChatCompletion processes OpenAI-compatible chat completion requests
 func HandleOpenAIChatCompletion(c *gin.Context) {
 	var req models.OpenAIChatCompletionRequest
@@ -127,7 +139,7 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 		}
 		data, _ := json.Marshal(chunk)
 		fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-		c.Writer.(http.Flusher).Flush()
+		safeFlush(c.Writer)
 	}
 
 	flushTextBuffer := func() {
@@ -244,7 +256,7 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	done := make(chan bool)
+	done := make(chan bool, 1)
 	go func() {
 		for scanner.Scan() {
 			resetTimeout()
@@ -306,7 +318,7 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 		"finish_reason": finishReason,
 	})
 	fmt.Fprintf(c.Writer, "data: [DONE]\n\n")
-	c.Writer.(http.Flusher).Flush()
+	safeFlush(c.Writer)
 }
 
 // handleOpenAINonStream handles non-streaming OpenAI response
