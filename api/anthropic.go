@@ -256,7 +256,7 @@ func buildAnthropicSystem(system interface{}, toolSystemPrompt string) string {
 
 // handleAnthropicStream handles streaming Anthropic response
 func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, tools []models.Tool, msgID string) {
-	c.Header("Content-Type", "text/event-stream")
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 
@@ -470,11 +470,16 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					tagLookback := toolcall.ToolCallStartLength()
 					natLookback := toolcall.NaturalToolPrefixLookback(textBuffer)
 					lookback := max(tagLookback, natLookback)
-					safeLen := len(textBuffer) - lookback
-					if safeLen > 0 {
-						safeText := textBuffer[:safeLen]
-						textBuffer = textBuffer[safeLen:]
-						if !textBlockStarted {
+					if len(textBuffer) > lookback {
+						// 确保不在 UTF-8 多字节字符中间截断
+						safeLen := len(textBuffer) - lookback
+						for safeLen < len(textBuffer) && textBuffer[safeLen]&0xC0 == 0x80 {
+							safeLen++
+						}
+						if safeLen > 0 && safeLen <= len(textBuffer) {
+							safeText := textBuffer[:safeLen]
+							textBuffer = textBuffer[safeLen:]
+							if !textBlockStarted {
 							blockIdx := 0
 							if thinkingBlockStarted {
 								blockIdx = 1
