@@ -1,0 +1,20 @@
+{
+  "AGENTS.md": [
+    {
+      "id": "notebook-1776705068580_yvmm4w35b",
+      "filePath": "AGENTS.md",
+      "note": "⚠️ 重要：Go迁移版与Node.js原版功能差距巨大，当前Go版本仅为框架/骨架，核心功能均未实现。详见对比分析。",
+      "createdAt": "2026-04-21T01:11:08.580",
+      "updatedAt": "2026-04-21T01:11:08.580"
+    }
+  ],
+  "api": [
+    {
+      "id": "notebook-1776711586246_dirk6evdq",
+      "filePath": "api",
+      "note": "⚠️ Go迁移版已完成所有核心功能实现。关键文件：api/openai.go（OpenAI Chat Completion + 流式SSE）、api/anthropic.go（Anthropic Messages API + 流式SSE）、api/config.go（配置API）、api/models.go（模型映射+元宝请求构建）、toolcall/parser.go（工具调用解析）、yuanbao/client.go（元宝HTTP客户端）、internal/utils/prompt.go（Prompt构建+截断）。所有路由已在main.go注册。包依赖关系：api→yuanbao, session, toolcall, internal/models, internal/utils。",
+      "createdAt": "2026-04-21T02:59:46.246",
+      "updatedAt": "2026-04-21T02:59:46.246"
+    }
+  ]
+}

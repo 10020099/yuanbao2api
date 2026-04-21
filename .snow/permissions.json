@@ -1,0 +1,10 @@
+{
+  "alwaysApprovedTools": [
+    "filesystem-read",
+    "terminal-execute",
+    "filesystem-create",
+    "filesystem-replaceedit",
+    "notebook-manage",
+    "ace-text_search"
+  ]
+}
