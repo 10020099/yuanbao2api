@@ -256,7 +256,7 @@ func buildAnthropicSystem(system interface{}, toolSystemPrompt string) string {
 
 // handleAnthropicStream handles streaming Anthropic response
 func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, tools []models.Tool, msgID string) {
-	c.Header("Content-Type", "text/event-stream")
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
 	c.Header("Connection", "keep-alive")
 

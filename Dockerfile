@@ -23,6 +23,9 @@ RUN go build -o main .
 # Final stage
 FROM alpine:latest
 
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
 WORKDIR /app
 
 # Copy the binary from builder

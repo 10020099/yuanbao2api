@@ -34,6 +34,8 @@ func NewClient() *Client {
 	headers.Set("x-language", "zh-CN")
 	headers.Set("x-requested-with", "XMLHttpRequest")
 	headers.Set("content-type", "text/plain;charset=UTF-8")
+	headers.Set("accept", "text/event-stream, application/json, text/plain, */*")
+	headers.Set("accept-charset", "utf-8")
 	headers.Set("x-platform", "win")
 	headers.Set("x-source", "web")
 	headers.Set("x-webversion", "2.63.0")
