@@ -269,7 +269,18 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 	thinkingBlockStarted := false
 	hasTools := len(tools) > 0
 
-	// UTF-8 安全的字符串切片辅助函数
+	// 将字节索引转换为字符索引（rune index）
+	byteToRuneIndex := func(s string, byteIdx int) int {
+		if byteIdx <= 0 {
+			return 0
+		}
+		if byteIdx >= len(s) {
+			return len([]rune(s))
+		}
+		return len([]rune(s[:byteIdx]))
+	}
+
+	// UTF-8 安全的字符串切片辅助函数（接收字符索引）
 	substringRune := func(s string, start, end int) string {
 		runes := []rune(s)
 		if start < 0 { start = 0 }
@@ -381,8 +392,8 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					if inNaturalToolCall {
 						inNaturalToolCall = false
 					}
-					beforeTag := substringRune(textBuffer, 0, startMatch.Index)
-				textBuffer = substringRune(textBuffer, startMatch.Index, len([]rune(textBuffer)))
+					beforeTag := substringRune(textBuffer, 0, byteToRuneIndex(textBuffer, startMatch.Index))
+			textBuffer = substringRune(textBuffer, byteToRuneIndex(textBuffer, startMatch.Index), len([]rune(textBuffer)))
 					if beforeTag != "" {
 						if !textBlockStarted {
 							blockIdx := 0
@@ -421,7 +432,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					endMatch := toolcall.DetectToolCallEndPublic(fullTextStr, 0)
 					if endMatch.Index != -1 {
 						inToolCall = false
-						textBuffer = substringRune(fullTextStr, endMatch.Index+len(endMatch.Tag), len([]rune(fullTextStr)))
+						textBuffer = substringRune(fullTextStr, byteToRuneIndex(fullTextStr, endMatch.Index+len(endMatch.Tag)), len([]rune(fullTextStr)))
 					}
 				}
 
@@ -429,8 +440,8 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					if strings.Contains(textBuffer, `"name"`) && strings.Contains(textBuffer, `"arguments"`) {
 						natIdx := findNaturalToolStart(textBuffer)
 						if natIdx != -1 {
-							beforeNat := substringRune(textBuffer, 0, natIdx)
-							textBuffer = substringRune(textBuffer, natIdx, len([]rune(textBuffer)))
+							beforeNat := substringRune(textBuffer, 0, byteToRuneIndex(textBuffer, natIdx))
+				textBuffer = substringRune(textBuffer, byteToRuneIndex(textBuffer, natIdx), len([]rune(textBuffer)))
 				if beforeNat != "" {
 								if !textBlockStarted {
 									blockIdx := 0
