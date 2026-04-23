@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -383,8 +384,13 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 		}
 
 		if chunk.Type == "text" && chunk.Msg != "" {
-			fullText.WriteString(chunk.Msg)
-			textBuffer += chunk.Msg
+		// 验证并修复UTF-8编码
+		if !utf8.ValidString(chunk.Msg) {
+			// 如果包含无效UTF-8，尝试修复（移除无效字节）
+			chunk.Msg = strings.ToValidUTF8(chunk.Msg, "")
+		}
+		fullText.WriteString(chunk.Msg)
+		textBuffer += chunk.Msg
 
 			if hasTools {
 				startMatch := toolcall.DetectToolCallStartPublic(textBuffer, 0)
