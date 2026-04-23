@@ -269,6 +269,15 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 	thinkingBlockStarted := false
 	hasTools := len(tools) > 0
 
+	// UTF-8 安全的字符串切片辅助函数
+	substringRune := func(s string, start, end int) string {
+		runes := []rune(s)
+		if start < 0 { start = 0 }
+		if end > len(runes) { end = len(runes) }
+		if start >= end { return "" }
+		return string(runes[start:end])
+	}
+
 	streamTimeout := time.NewTimer(120 * time.Second)
 	defer streamTimeout.Stop()
 
@@ -372,8 +381,8 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					if inNaturalToolCall {
 						inNaturalToolCall = false
 					}
-					beforeTag := textBuffer[:startMatch.Index]
-					textBuffer = textBuffer[startMatch.Index:]
+					beforeTag := substringRune(textBuffer, 0, startMatch.Index)
+				textBuffer = substringRune(textBuffer, startMatch.Index, len([]rune(textBuffer)))
 					if beforeTag != "" {
 						if !textBlockStarted {
 							blockIdx := 0
@@ -412,7 +421,7 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					endMatch := toolcall.DetectToolCallEndPublic(fullTextStr, 0)
 					if endMatch.Index != -1 {
 						inToolCall = false
-						textBuffer = fullTextStr[endMatch.Index+len(endMatch.Tag):]
+						textBuffer = substringRune(fullTextStr, endMatch.Index+len(endMatch.Tag), len([]rune(fullTextStr)))
 					}
 				}
 
@@ -420,9 +429,9 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					if strings.Contains(textBuffer, `"name"`) && strings.Contains(textBuffer, `"arguments"`) {
 						natIdx := findNaturalToolStart(textBuffer)
 						if natIdx != -1 {
-							beforeNat := textBuffer[:natIdx]
-							textBuffer = textBuffer[natIdx:]
-							if beforeNat != "" {
+							beforeNat := substringRune(textBuffer, 0, natIdx)
+							textBuffer = substringRune(textBuffer, natIdx, len([]rune(textBuffer)))
+				if beforeNat != "" {
 								if !textBlockStarted {
 									blockIdx := 0
 									if thinkingBlockStarted {
@@ -459,10 +468,10 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 				if inNaturalToolCall {
 					fullTextStr := fullText.String()
 					fromNatStart := len(fullTextStr) - len(textBuffer)
-					subText := fullTextStr[fromNatStart:]
-					if balanced := toolcall.ExtractBalancedJSONPublic(subText, 0); balanced != "" {
-						inNaturalToolCall = false
-						textBuffer = fullTextStr[fromNatStart+len(balanced):]
+					subText := substringRune(fullTextStr, fromNatStart, len([]rune(fullTextStr)))
+						if balanced := toolcall.ExtractBalancedJSONPublic(subText, 0); balanced != "" {
+							inNaturalToolCall = false
+							textBuffer = substringRune(fullTextStr, fromNatStart+len(balanced), len([]rune(fullTextStr)))
 					}
 				}
 
