@@ -474,8 +474,9 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					if safeLen > 0 {
 						// 确保不在 UTF-8 多字节字符中间截断
 						// UTF-8 continuation bytes 以 10xxxxxx 开头 (0x80-0xBF)
-						for safeLen < len(textBuffer) && (textBuffer[safeLen]&0xC0) == 0x80 {
-							safeLen++
+						// 如果 safeLen 指向 continuation byte，向前回退到字符起始位置
+						for safeLen > 0 && (textBuffer[safeLen]&0xC0) == 0x80 {
+							safeLen--
 						}
 						safeText := textBuffer[:safeLen]
 						textBuffer = textBuffer[safeLen:]
