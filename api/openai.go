@@ -237,22 +237,16 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 				}
 
 				if !inToolCall && !inNaturalToolCall {
-				tagLookback := toolcall.ToolCallStartLength()
-				natLookback := toolcall.NaturalToolPrefixLookback(textBuffer)
-				lookback := max(tagLookback, natLookback)
-				if len(textBuffer) > lookback {
-					// 确保不在 UTF-8 多字节字符中间截断
+					tagLookback := toolcall.ToolCallStartLength()
+					natLookback := toolcall.NaturalToolPrefixLookback(textBuffer)
+					lookback := max(tagLookback, natLookback)
 					safeLen := len(textBuffer) - lookback
-					for safeLen < len(textBuffer) && textBuffer[safeLen]&0xC0 == 0x80 {
-						safeLen++
-					}
-					if safeLen > 0 && safeLen <= len(textBuffer) {
+					if safeLen > 0 {
 						safeText := textBuffer[:safeLen]
 						textBuffer = textBuffer[safeLen:]
 						sendTextChunk(safeText)
 					}
 				}
-			}
 			} else {
 				flushTextBuffer()
 			}
@@ -461,16 +455,4 @@ func findNaturalToolStart(text string) int {
 	return braceIdx
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}

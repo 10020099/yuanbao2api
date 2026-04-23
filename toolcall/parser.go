@@ -106,12 +106,7 @@ func NaturalToolPrefixLookback(textBuffer string) int {
 	return 0
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
+
 
 // ParseToolCalls extracts tool calls from text using both Unicode and ASCII markers
 func ParseToolCalls(text string) []ToolCall {
