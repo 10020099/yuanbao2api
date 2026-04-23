@@ -156,9 +156,9 @@ func ParseStreamLine(line string) (*YuanbaoResponseChunk, error) {
 
 	var payload []byte
 	if bytes.HasPrefix(trimmed, []byte("data: ")) {
-		payload = trimmed[6:]
+		payload = trimmed[6:]  // "data: " 是纯ASCII，字节切片安全
 	} else {
-		payload = trimmed[5:]
+		payload = trimmed[5:]  // "data:" 是纯ASCII，字节切片安全
 	}
 
 	if string(payload) == "[DONE]" {
