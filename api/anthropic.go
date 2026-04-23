@@ -1,4 +1,4 @@
-package api
+﻿package api
 
 import (
 	"bufio"
@@ -54,7 +54,7 @@ func HandleAnthropicMessages(c *gin.Context) {
 	prompt := ""
 	sysPart := buildAnthropicSystem(req.System, toolSystemPrompt)
 	if sysPart != "" {
-		prompt = fmt.Sprintf("[系统提示: %s]\n\n", sysPart)
+		prompt = fmt.Sprintf("[绯荤粺鎻愮ず: %s]\n\n", sysPart)
 	}
 	prompt += rawPrompt
 
@@ -67,9 +67,9 @@ func HandleAnthropicMessages(c *gin.Context) {
 		}
 		maxRawLen := toolcall.MAX_PROMPT_LENGTH - len(sysPrefix)
 		if maxRawLen > 500 {
-			prompt = sysPrefix + rawPrompt[len(rawPrompt)-maxRawLen:] + "\n[...历史消息已截断...]"
+			prompt = sysPrefix + rawPrompt[len(rawPrompt)-maxRawLen:] + "\n[...鍘嗗彶娑堟伅宸叉埅鏂?..]"
 		} else {
-			prompt = prompt[:toolcall.MAX_PROMPT_LENGTH] + "\n[...已截断...]"
+			prompt = prompt[:toolcall.MAX_PROMPT_LENGTH] + "\n[...宸叉埅鏂?..]"
 		}
 	}
 
@@ -79,7 +79,7 @@ func HandleAnthropicMessages(c *gin.Context) {
 
 	yuanbaoReq := buildYuanbaoRequest(prompt, modelConfig, useDeepThinking, useInternetSearch, agentID)
 
-	log.Printf("=== Anthropic API -> 元宝请求 ===")
+	log.Printf("=== Anthropic API -> 鍏冨疂璇锋眰 ===")
 	log.Printf("Model: %s -> chatModelId: %s", model, modelConfig.ChatModelID)
 	log.Printf("Tools: %d", len(req.Tools))
 	log.Printf("Stream: %v", req.Stream)
@@ -159,7 +159,7 @@ func anthropicMessagesToPrompt(messages []models.Message, tools []models.Tool) (
 								}
 							}
 							truncated := toolcall.TruncateToolResult(rawContent)
-							parts = append(parts, fmt.Sprintf("工具 %s 的执行结果:\n%s", toolUseID, truncated))
+							parts = append(parts, fmt.Sprintf("宸ュ叿 %s 鐨勬墽琛岀粨鏋?\n%s", toolUseID, truncated))
 						}
 					}
 				}
@@ -167,11 +167,11 @@ func anthropicMessagesToPrompt(messages []models.Message, tools []models.Tool) (
 					text = strings.Join(parts, "\n")
 				}
 			}
-			prompt.WriteString(fmt.Sprintf("用户: %s\n", text))
+			prompt.WriteString(fmt.Sprintf("鐢ㄦ埛: %s\n", text))
 
 		case "assistant":
 			if str, ok := msg.Content.(string); ok {
-				prompt.WriteString(fmt.Sprintf("助手: %s\n", str))
+				prompt.WriteString(fmt.Sprintf("鍔╂墜: %s\n", str))
 			} else if blocks, ok := msg.Content.([]interface{}); ok {
 				var parts []string
 				for _, block := range blocks {
@@ -186,22 +186,22 @@ func anthropicMessagesToPrompt(messages []models.Message, tools []models.Tool) (
 							name, _ := blockMap["name"].(string)
 							input, _ := blockMap["input"]
 							inputJSON, _ := json.Marshal(input)
-							parts = append(parts, fmt.Sprintf("调用工具 %s，参数: %s", name, string(inputJSON)))
+							parts = append(parts, fmt.Sprintf("璋冪敤宸ュ叿 %s锛屽弬鏁? %s", name, string(inputJSON)))
 						}
 					}
 				}
-				prompt.WriteString(fmt.Sprintf("助手: %s\n", strings.Join(parts, "\n")))
+				prompt.WriteString(fmt.Sprintf("鍔╂墜: %s\n", strings.Join(parts, "\n")))
 			} else if msg.ToolCalls != nil && len(msg.ToolCalls) > 0 {
 				var calls []string
 				for _, tc := range msg.ToolCalls {
-					calls = append(calls, fmt.Sprintf("调用工具 %s，参数: %s", tc.Function.Name, tc.Function.Arguments))
+					calls = append(calls, fmt.Sprintf("璋冪敤宸ュ叿 %s锛屽弬鏁? %s", tc.Function.Name, tc.Function.Arguments))
 				}
-				prompt.WriteString(fmt.Sprintf("助手: 我需要调用工具来完成任务。\n%s\n", strings.Join(calls, "\n")))
+				prompt.WriteString(fmt.Sprintf("鍔╂墜: 鎴戦渶瑕佽皟鐢ㄥ伐鍏锋潵瀹屾垚浠诲姟銆俓n%s\n", strings.Join(calls, "\n")))
 			}
 		}
 	}
 
-	prompt.WriteString("\n请作为助手继续回复：")
+	prompt.WriteString("\n璇蜂綔涓哄姪鎵嬬户缁洖澶嶏細")
 
 	return prompt.String(), toolSystemPrompt, systemInjected
 }
@@ -472,6 +472,11 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					lookback := max(tagLookback, natLookback)
 					safeLen := len(textBuffer) - lookback
 					if safeLen > 0 {
+						// 确保不在 UTF-8 多字节字符中间截断
+						// UTF-8 continuation bytes 以 10xxxxxx 开头 (0x80-0xBF)
+						for safeLen < len(textBuffer) && (textBuffer[safeLen]&0xC0) == 0x80 {
+							safeLen++
+						}
 						safeText := textBuffer[:safeLen]
 						textBuffer = textBuffer[safeLen:]
 						if !textBlockStarted {
