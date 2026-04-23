@@ -2,6 +2,7 @@
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -539,6 +540,24 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	
+	// 自定义分割函数：确保不在UTF-8字符中间切断
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		// 查找换行符
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			// 找到换行符，返回包括换行符的行
+			return i + 1, data[0:i], nil
+		}
+		// 如果是EOF，返回剩余数据
+		if atEOF {
+			return len(data), data, nil
+		}
+		// 请求更多数据
+		return 0, nil, nil
+	})
 
 	done := make(chan bool, 1)
 	go func() {
