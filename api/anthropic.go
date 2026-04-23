@@ -470,16 +470,12 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 					tagLookback := toolcall.ToolCallStartLength()
 					natLookback := toolcall.NaturalToolPrefixLookback(textBuffer)
 					lookback := max(tagLookback, natLookback)
-					safeLen := len(textBuffer) - lookback
-					if safeLen > 0 {
-						// 确保不在 UTF-8 多字节字符中间截断
-						// UTF-8 continuation bytes 以 10xxxxxx 开头 (0x80-0xBF)
-						// 如果 safeLen 指向 continuation byte，向前回退到字符起始位置
-						for safeLen > 0 && (textBuffer[safeLen]&0xC0) == 0x80 {
-							safeLen--
-						}
-						safeText := textBuffer[:safeLen]
-						textBuffer = textBuffer[safeLen:]
+					// 使用 rune 切片确保 UTF-8 安全（按字符而非字节）
+					runes := []rune(textBuffer)
+					runeLen := len(runes) - lookback
+					if runeLen > 0 {
+						safeText := string(runes[:runeLen])
+						textBuffer = string(runes[runeLen:])
 						if !textBlockStarted {
 							blockIdx := 0
 							if thinkingBlockStarted {
