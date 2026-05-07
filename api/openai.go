@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"yuanbao2api/internal/models"
@@ -255,6 +257,34 @@ func handleOpenAIStream(c *gin.Context, resp *http.Response, model string, tools
 
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+
+	// 自定义分割函数：确保不在UTF-8字符中间切断
+	scanner.Split(func(data []byte, atEOF bool) (advance int, token []byte, err error) {
+		if atEOF && len(data) == 0 {
+			return 0, nil, nil
+		}
+		// 查找换行符
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			// 确保返回的 token 末尾是完整的 UTF-8 字符
+			// 回退到最后一个完整 UTF-8 字符的边界
+			end := i
+			for end > 0 && !utf8.RuneStart(data[end]) {
+				end--
+			}
+			// 验证从 end 到 i 的字节是否构成完整 UTF-8 字符
+			if end < i && !utf8.Valid(data[end:i]) {
+				// 不完整的 UTF-8 序列，回退到 end
+				return i + 1, data[0:end], nil
+			}
+			return i + 1, data[0:i], nil
+		}
+		// 如果是EOF，返回剩余数据
+		if atEOF {
+			return len(data), data, nil
+		}
+		// 请求更多数据
+		return 0, nil, nil
+	})
 
 	done := make(chan bool, 1)
 	go func() {

@@ -548,7 +548,17 @@ func handleAnthropicStream(c *gin.Context, resp *http.Response, model string, to
 		}
 		// 查找换行符
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
-			// 找到换行符，返回包括换行符的行
+			// 确保返回的 token 末尾是完整的 UTF-8 字符
+			// 回退到最后一个完整 UTF-8 字符的边界
+			end := i
+			for end > 0 && !utf8.RuneStart(data[end]) {
+				end--
+			}
+			// 验证从 end 到 i 的字节是否构成完整 UTF-8 字符
+			if end < i && !utf8.Valid(data[end:i]) {
+				// 不完整的 UTF-8 序列，回退到 end
+				return i + 1, data[0:end], nil
+			}
 			return i + 1, data[0:i], nil
 		}
 		// 如果是EOF，返回剩余数据
