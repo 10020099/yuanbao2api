@@ -78,13 +78,13 @@ var MODEL_MAPPING = map[string]ModelConfig{
 		Description: "适合深度思考和复杂推理任务",
 	},
 	"hunyuan-t1": {
-		ChatModelID: "hunyuan",
+		ChatModelID: "hunyuan_gpt_175B_0404",
 		Model:       "gpt_175B_0404",
 		Name:        "Hunyuan T1",
 		Description: "腾讯混元大模型，全能处理",
 	},
 	"hunyuan": {
-		ChatModelID: "hunyuan",
+		ChatModelID: "hunyuan_gpt_175B_0404",
 		Model:       "gpt_175B_0404",
 		Name:        "Hunyuan T1",
 		Description: "腾讯混元大模型，全能处理",
@@ -131,7 +131,7 @@ func buildYuanbaoRequest(prompt string, modelConfig ModelConfig, useDeepThinking
 	if useDeepThinking {
 		if strings.Contains(modelConfig.ChatModelID, "hunyuan") {
 			chatModelID = "hunyuan_t1"
-			modelID = "hunyuan_t1"
+			modelID = "hunyuan_gpt_175B_0404"
 			subModelID = "hunyuan_t1"
 		} else {
 			chatModelID = "deep_seek"

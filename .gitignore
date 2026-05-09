@@ -2,5 +2,5 @@
 .env
 *.log
 .DS_Store
-nodejs/node_modules
+元宝nodejs/node_modules
 .snow/

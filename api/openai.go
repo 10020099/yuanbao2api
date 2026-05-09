@@ -91,7 +91,13 @@ func HandleOpenAIChatCompletion(c *gin.Context) {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
 		log.Printf("Yuanbao API error: status=%d, body=%s", resp.StatusCode, string(body[:min(500, len(body))]))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Yuanbao API error: %d", resp.StatusCode)})
+
+		// Attempt to provide a more detailed error message
+		errorMsg := fmt.Sprintf("Yuanbao API error: %d", resp.StatusCode)
+		if len(body) > 0 {
+			errorMsg = fmt.Sprintf("Yuanbao API error: %d - %s", resp.StatusCode, string(body))
+		}
+		c.JSON(resp.StatusCode, gin.H{"error": errorMsg})
 		return
 	}
 
